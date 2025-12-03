@@ -1,0 +1,57 @@
+
+# notebooks/etl_retail.ipynb (cells)
+# Cell 1: imports & connection
+import pandas as pd
+import pyodbc
+import os
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
+
+# optionally store credentials in .env
+# load_dotenv()
+
+# SQL Server connection string (Trusted auth)
+server = r"BANDIASHOK"   # e.g. "localhost\\SQLEXPRESS"
+database = "RetailAnalytics"
+conn_str = f"mssql+pyodbc://@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server;Trusted_Connection=yes;"
+
+engine = create_engine(conn_str)
+
+# Cell 2: read CSVs
+df_customers = pd.read_csv("../data/customers.csv")
+df_products = pd.read_csv("../data/products.csv")
+df_sales = pd.read_csv("../data/sales.csv", parse_dates=['sale_date'])
+
+# quick preview
+display(df_customers.head())
+display(df_products.head())
+display(df_sales.head())
+
+# Cell 3: simple cleaning (examples)
+# - Trim strings
+for df in [df_customers, df_products]:
+    str_cols = df.select_dtypes(["object"]).columns
+    for c in str_cols:
+        df[c] = df[c].astype(str).str.strip()
+
+# validate types
+df_products['price'] = pd.to_numeric(df_products['price'], errors='coerce').fillna(0)
+df_sales['quantity'] = pd.to_numeric(df_sales['quantity'], errors='coerce').fillna(0).astype(int)
+
+# Cell 4: load to staging using sqlalchemy to_sql (replace existing)
+df_customers.to_sql('stg_customers', con=engine, if_exists='replace', index=False)
+df_products.to_sql('stg_products', con=engine, if_exists='replace', index=False)
+df_sales.to_sql('stg_sales', con=engine, if_exists='replace', index=False)
+
+print("Staging tables loaded.")
+
+# Cell 5: call stored procedures to transform and load DWH
+with engine.begin() as conn:
+    conn.execute("EXEC sp_load_dim_customer;")
+    conn.execute("EXEC sp_load_fact_sales;")
+
+print("DWH load completed.")
+
+# Cell 6: quick analytics query to validate
+df = pd.read_sql("SELECT TOP 10 f.sale_id, c.full_name, p.product_name, f.quantity, f.total_amount FROM fact_sales f JOIN dim_customer c ON f.customer_sk=c.customer_sk JOIN dim_product p ON f.product_sk=p.product_sk", engine)
+display(df)
